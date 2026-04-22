@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orbit engine test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee; display: flex;
+           flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 24px; padding: 32px; }
+    h1 { font-size: 22px; font-weight: 500; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 16px; }
+    label { font-size: 13px; color: #888; display: flex; flex-direction: column; gap: 6px; }
+    input[type=range] { width: 100%; accent-color: #1db954; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button { background: #222; border: 1px solid #444; color: #eee; border-radius: 8px;
+             padding: 8px 16px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
+    button:hover { background: #333; }
+    button.active { background: #1db954; border-color: #1db954; color: #000; }
+    #status { font-size: 12px; color: #666; text-align: center; }
+    #drop { border: 2px dashed #333; border-radius: 12px; padding: 32px; text-align: center;
+            font-size: 14px; color: #555; cursor: pointer; transition: border-color 0.15s; }
+    #drop.over { border-color: #1db954; color: #1db954; }
+    canvas { width: 100%; height: 80px; border-radius: 8px; background: #0e0e0e; }
+  </style>
+</head>
+<body>
+
+<h1>Orbit — engine test</h1>
+
+<div id="drop">Drop an audio file here to test</div>
+
+<div class="card">
+  <label>Speed: <span id="speedVal">0.4 Hz</span>
+    <input type="range" id="speed" min="0.05" max="2.0" step="0.05" value="0.4">
+  </label>
+  <label>Width: <span id="widthVal">80%</span>
+    <input type="range" id="width" min="0.1" max="1.0" step="0.05" value="0.8">
+  </label>
+  <label>Reverb: <span id="reverbVal">35%</span>
+    <input type="range" id="reverb" min="0" max="1.0" step="0.05" value="0.35">
+  </label>
+
+  <label>Pan shape</label>
+  <div class="row" id="shapes">
+    <button class="shape active" data-shape="circle">Circle</button>
+    <button class="shape" data-shape="figure8">Figure-8</button>
+    <button class="shape" data-shape="sidesweep">Side sweep</button>
+    <button class="shape" data-shape="randomdrift">Random drift</button>
+  </div>
+
+  <div class="row">
+    <button id="bypassBtn">Bypass: OFF</button>
+  </div>
+
+  <canvas id="viz"></canvas>
+  <div id="status">Waiting for audio file...</div>
+</div>
+
+<script type="module">
+  import { engine } from '/engine/orbit-engine.js'
+
+  const status  = document.getElementById('status')
+  const drop    = document.getElementById('drop')
+  const canvas  = document.getElementById('viz')
+  const ctx2d   = canvas.getContext('2d')
+
+  let bypassed = false
+
+  // ── File drop ──
+  drop.addEventListener('dragenter', e => { 
+    e.preventDefault()
+    e.stopPropagation()
+    drop.classList.add('over')
+  })
+  drop.addEventListener('dragover', e => { 
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'copy'
+    drop.classList.add('over') 
+  })
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'))
+  drop.addEventListener('drop', async e => {
+    e.preventDefault()
+    e.stopPropagation()
+    drop.classList.remove('over')
+    
+    const files = e.dataTransfer.files
+    if (!files || files.length === 0) {
+      status.textContent = 'No audio files received'
+      console.log('dataTransfer:', e.dataTransfer)
+      return
+    }
+    
+    const file = files[0]
+    status.textContent = `Loading: ${file.name}…`
+
+    try {
+      await engine.init()
+      await engine.resume()
+
+      const arrayBuf = await file.arrayBuffer()
+      const audioBuf = await engine.ctx.decodeAudioData(arrayBuf)
+      engine.connectBuffer(audioBuf, true)
+
+      drop.textContent = `Playing: ${file.name}`
+      status.textContent = 'Engine running. Adjust controls above.'
+      startViz()
+    } catch (err) {
+      status.textContent = `Error: ${err.message}`
+      console.error('Engine error:', err)
+    }
+  })
+
+  // Prevent default drag behavior on the entire document
+  document.addEventListener('dragover', e => e.preventDefault())
+  document.addEventListener('drop', e => e.preventDefault())
+
+  // ── Sliders ──
+  document.getElementById('speed').addEventListener('input', e => {
+    const v = parseFloat(e.target.value)
+    engine.setSpeed(v)
+    document.getElementById('speedVal').textContent = v.toFixed(2) + ' Hz'
+  })
+  document.getElementById('width').addEventListener('input', e => {
+    const v = parseFloat(e.target.value)
+    engine.setWidth(v)
+    document.getElementById('widthVal').textContent = Math.round(v * 100) + '%'
+  })
+  document.getElementById('reverb').addEventListener('input', e => {
+    const v = parseFloat(e.target.value)
+    engine.setReverb(v)
+    document.getElementById('reverbVal').textContent = Math.round(v * 100) + '%'
+  })
+
+  // ── Shape pills ──
+  document.querySelectorAll('.shape').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.shape').forEach(b => b.classList.remove('active'))
+      btn.classList.add('active')
+      engine.setShape(btn.dataset.shape)
+    })
+  })
+
+  // ── Bypass ──
+  document.getElementById('bypassBtn').addEventListener('click', () => {
+    bypassed = !bypassed
+    engine.setBypass(bypassed)
+    const btn = document.getElementById('bypassBtn')
+    btn.textContent = `Bypass: ${bypassed ? 'ON' : 'OFF'}`
+    btn.classList.toggle('active', bypassed)
+  })
+
+  // ── Visualizer ──
+  let dotX = 0, dotZ = 1, dotAngle = 0
+  engine.onPosition = (x, z, angle) => { dotX = x; dotZ = z; dotAngle = angle }
+
+  function startViz() {
+    canvas.width  = canvas.offsetWidth  * devicePixelRatio
+    canvas.height = canvas.offsetHeight * devicePixelRatio
+    ctx2d.scale(devicePixelRatio, devicePixelRatio)
+
+    const W = canvas.offsetWidth
+    const H = canvas.offsetHeight
+
+    function draw() {
+      requestAnimationFrame(draw)
+      ctx2d.clearRect(0, 0, W, H)
+
+      // Frequency bars
+      const freq = engine.getFrequencyData()
+      const barW = W / freq.length
+      ctx2d.fillStyle = '#1db95440'
+      for (let i = 0; i < freq.length; i++) {
+        const h = (freq[i] / 255) * H
+        ctx2d.fillRect(i * barW, H - h, barW - 1, h)
+      }
+
+      // Orbiting dot — map x (-1..1) to screen X, z (-1..1) to screen Y
+      const rms   = engine.getRMS()
+      const r     = 4 + rms * 20
+      const sx    = (dotX * 0.45 + 0.5) * W
+      const sy    = (dotZ * 0.45 + 0.5) * H
+
+      // Guide ring
+      ctx2d.beginPath()
+      ctx2d.arc(W / 2, H / 2, Math.min(W, H) * 0.4, 0, Math.PI * 2)
+      ctx2d.strokeStyle = '#ffffff10'
+      ctx2d.lineWidth = 1
+      ctx2d.stroke()
+
+      // Dot
+      ctx2d.beginPath()
+      ctx2d.arc(sx, sy, r, 0, Math.PI * 2)
+      ctx2d.fillStyle = '#1db954'
+      ctx2d.fill()
+    }
+
+    draw()
+  }
+</script>
+</body>
+</html>
